@@ -10,7 +10,7 @@ import {
 import { toast } from "sonner"
 
 import { SETTINGS_STORAGE_KEY } from "@/lib/defaults"
-import { getSettings, saveSettings } from "@/lib/storage"
+import { getSettings } from "@/lib/storage"
 import { sendRuntimeMessage } from "@/lib/runtime"
 import type {
   AnalyzePageResult,
@@ -18,8 +18,8 @@ import type {
   ChatTurn,
   ExtensionSettings,
   PageContext,
-  ProviderId,
 } from "@/lib/types"
+import { ChatMessageMarkdown } from "@/components/chat-message-markdown"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -40,25 +40,19 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-
-const PROVIDER_LABELS: Record<ProviderId, string> = {
-  openai: "OpenAI",
-  claude: "Claude",
-}
 
 const isEmbedded =
   new URLSearchParams(window.location.search).get("embedded") === "1"
 
 export function SidePanelApp() {
   const [settings, setSettings] = useState<ExtensionSettings | null>(null)
-  const [provider, setProvider] = useState<ProviderId>("openai")
   const [pageContext, setPageContext] = useState<PageContext | null>(null)
   const [pageError, setPageError] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [prompt, setPrompt] = useState("")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isSending, setIsSending] = useState(false)
+  const activeProvider = settings?.selectedProvider ?? "openai"
 
   useEffect(() => {
     let isActive = true
@@ -72,7 +66,6 @@ export function SidePanelApp() {
         }
 
         setSettings(nextSettings)
-        setProvider(nextSettings.selectedProvider)
 
         try {
           const context = await sendRuntimeMessage<PageContext>({
@@ -120,7 +113,6 @@ export function SidePanelApp() {
       const next = changes[SETTINGS_STORAGE_KEY].newValue as ExtensionSettings
 
       setSettings(next)
-      setProvider(next.selectedProvider)
     }
 
     chrome.storage.onChanged.addListener(listener)
@@ -154,27 +146,6 @@ export function SidePanelApp() {
     }
   }
 
-  async function handleProviderChange(nextProvider: string) {
-    if (!settings || (nextProvider !== "openai" && nextProvider !== "claude")) {
-      return
-    }
-
-    const nextSettings: ExtensionSettings = {
-      ...settings,
-      selectedProvider: nextProvider,
-    }
-
-    try {
-      setSettings(nextSettings)
-      setProvider(nextProvider)
-      await saveSettings(nextSettings)
-    } catch (error) {
-      setSettings(settings)
-      setProvider(settings.selectedProvider)
-      toast.error(error instanceof Error ? error.message : "保存 provider 失败。")
-    }
-  }
-
   async function handleSendPrompt() {
     const value = prompt.trim()
 
@@ -197,7 +168,7 @@ export function SidePanelApp() {
     try {
       const result = await sendRuntimeMessage<AnalyzePageResult>({
         type: "analyze-page",
-        provider,
+        provider: activeProvider,
         messages: nextMessages.map<ChatTurn>(({ role, content }) => ({
           role,
           content,
@@ -243,7 +214,6 @@ export function SidePanelApp() {
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">WebAgentExtension</Badge>
-              <Badge>{PROVIDER_LABELS[provider]}</Badge>
             </div>
             <h1 className="text-xl font-semibold tracking-tight">
               基于当前网页的 AI 对话面板
@@ -290,22 +260,6 @@ export function SidePanelApp() {
 
         <Card>
           <CardContent className="flex flex-col gap-4 pt-6">
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                Active Provider
-              </span>
-              <ToggleGroup
-                type="single"
-                value={provider}
-                onValueChange={(value) => {
-                  void handleProviderChange(value)
-                }}
-                variant="outline"
-              >
-                <ToggleGroupItem value="openai">OpenAI</ToggleGroupItem>
-                <ToggleGroupItem value="claude">Claude</ToggleGroupItem>
-              </ToggleGroup>
-            </div>
             <div className="flex flex-wrap gap-2">
               <Badge variant="secondary">
                 {pageContext ? new URL(pageContext.url).hostname : "未连接网页"}
@@ -390,19 +344,19 @@ export function SidePanelApp() {
                       >
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                            {message.role === "assistant"
-                              ? message.provider
-                                ? PROVIDER_LABELS[message.provider]
-                                : "Assistant"
-                              : "You"}
+                            {message.role === "assistant" ? "Assistant" : "You"}
                           </span>
                           <time className="text-xs text-muted-foreground">
                             {new Date(message.createdAt).toLocaleTimeString()}
                           </time>
                         </div>
-                        <p className="whitespace-pre-wrap text-sm leading-6">
-                          {message.content}
-                        </p>
+                        {message.role === "assistant" ? (
+                          <ChatMessageMarkdown content={message.content} />
+                        ) : (
+                          <p className="whitespace-pre-wrap text-sm leading-6">
+                            {message.content}
+                          </p>
+                        )}
                       </article>
                     ))}
                   </div>
