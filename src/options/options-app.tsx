@@ -3,8 +3,13 @@ import { ShieldAlert } from "lucide-react"
 import { toast } from "sonner"
 
 import { getSettings, saveSettings } from "@/lib/storage"
-import { testProviderConnection } from "@/lib/provider-test"
-import type { ExtensionSettings, ProviderId, ProviderSettings } from "@/lib/types"
+import { sendRuntimeMessage } from "@/lib/runtime"
+import type {
+  ExtensionSettings,
+  ProviderId,
+  ProviderSettings,
+  ProviderTestResult,
+} from "@/lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -114,7 +119,10 @@ export function OptionsApp() {
     setTestingProvider(provider)
 
     try {
-      const result = await testProviderConnection(provider, settings[provider])
+      const result = await sendRuntimeMessage<ProviderTestResult>({
+        type: "test-provider",
+        provider,
+      })
 
       if (result.ok) {
         toast.success(result.summary)

@@ -57,6 +57,11 @@ export interface AnalyzePageStreamMessage {
   messages: ChatTurn[]
 }
 
+export interface TestProviderMessage {
+  type: "test-provider"
+  provider: ProviderId
+}
+
 export interface GetActivePageContextMessage {
   type: "get-active-page-context"
 }
@@ -67,7 +72,15 @@ export interface AnalyzePageMessage {
   messages: ChatTurn[]
 }
 
-export type RuntimeMessage = GetActivePageContextMessage | AnalyzePageMessage
+export interface ProviderTestResult {
+  ok: boolean
+  summary: string
+}
+
+export type RuntimeMessage =
+  | GetActivePageContextMessage
+  | AnalyzePageMessage
+  | TestProviderMessage
 
 export type StreamResponseMessage =
   | {

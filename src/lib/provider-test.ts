@@ -1,10 +1,9 @@
-import type { ProviderId, ProviderSettings } from "@/lib/types"
+import type {
+  ProviderId,
+  ProviderSettings,
+  ProviderTestResult,
+} from "@/lib/types"
 import { buildFetchInit, isLoopbackUrl } from "@/lib/network"
-
-interface ProviderTestResult {
-  ok: boolean
-  summary: string
-}
 
 export async function testProviderConnection(
   providerId: ProviderId,

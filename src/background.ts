@@ -1,9 +1,11 @@
 import { ensureSettings, getSettings } from "@/lib/storage"
 import { analyzeWithProvider, analyzeWithProviderStream } from "@/lib/providers"
+import { testProviderConnection } from "@/lib/provider-test"
 import type {
   AnalyzePageMessage,
   AnalyzePageStreamMessage,
   PageContext,
+  ProviderTestResult,
   RuntimeFailure,
   RuntimeMessage,
   RuntimeSuccess,
@@ -26,7 +28,11 @@ chrome.action.onClicked.addListener((tab) => {
     return
   }
 
-  void openSidePanelFromUserGesture(tab)
+  if (chrome.sidePanel?.open && typeof tab.windowId === "number") {
+    chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
+      console.warn("Failed to open side panel", error)
+    })
+  }
 })
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _, sendResponse) => {
@@ -66,23 +72,6 @@ async function bootstrapExtension() {
   }
 
   await ensureSettings()
-}
-
-async function openSidePanelFromUserGesture(tab: chrome.tabs.Tab) {
-  if (!chrome.sidePanel?.open) {
-    return
-  }
-
-  if (typeof tab.windowId === "number") {
-    await chrome.sidePanel.open({ windowId: tab.windowId })
-    return
-  }
-
-  const currentWindow = await chrome.windows.getCurrent()
-
-  if (typeof currentWindow.id === "number") {
-    await chrome.sidePanel.open({ windowId: currentWindow.id })
-  }
 }
 
 async function toggleFloatingPanelForTab(tabId: number) {
@@ -128,6 +117,17 @@ async function handleRuntimeMessage(
       })
 
       sendResponse({ ok: true, data: response })
+      return
+    }
+
+    if (message.type === "test-provider") {
+      const settings = await getSettings()
+      const result = await testProviderConnection(
+        message.provider,
+        settings[message.provider]
+      )
+
+      sendResponse({ ok: true, data: result satisfies ProviderTestResult })
       return
     }
 
@@ -247,6 +247,9 @@ async function getActivePageContext(maxChars: number): Promise<PageContext> {
     ...result,
     title: result.title || tab.title || "Untitled Page",
     url: result.url || tab.url,
+    headings: result.headings ?? [],
+    mathExpressions: result.mathExpressions ?? [],
+    content: result.content ?? "",
   }
 }
 

@@ -83,7 +83,7 @@ export function SidePanelApp() {
 
           setPageContext(context)
           setPageError("")
-          if (context.content.length > nextSettings.pageTextLimit) {
+          if ((context.content?.length ?? 0) > nextSettings.pageTextLimit) {
             toast.message("网页正文已按字数上限截断。")
           }
         } catch (error) {
@@ -139,7 +139,7 @@ export function SidePanelApp() {
       })
 
       setPageContext(context)
-      if (pageTextLimit && context.content.length > pageTextLimit) {
+      if (pageTextLimit && (context.content?.length ?? 0) > pageTextLimit) {
         toast.message("网页正文已按字数上限截断。")
       }
     } catch (error) {
@@ -354,7 +354,7 @@ export function SidePanelApp() {
                 {pageContext ? new URL(pageContext.url).hostname : "未连接网页"}
               </Badge>
               <Badge variant="secondary">
-                正文 {pageContext?.content.length.toLocaleString() || 0} chars
+                正文 {(pageContext?.content?.length ?? 0).toLocaleString()} chars
               </Badge>
               <Badge variant="secondary">
                 选中内容 {pageContext?.selection ? "已包含" : "无"}
@@ -530,7 +530,7 @@ export function SidePanelApp() {
                     </Badge>
                   ))}
                 </div>
-                {pageContext?.mathExpressions.length ? (
+                {pageContext?.mathExpressions?.length ? (
                   <>
                     <div className="flex flex-col gap-2">
                       <h2 className="text-sm font-medium">提取到的公式</h2>

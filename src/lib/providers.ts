@@ -472,6 +472,9 @@ function buildGroundedSystemPrompt(
   settings: ExtensionSettings,
   pageContext: PageContext
 ) {
+  const headings = pageContext.headings ?? []
+  const mathExpressions = pageContext.mathExpressions ?? []
+
   const blocks = [
     settings.systemPrompt.trim(),
     "以下是当前网页的结构化上下文。回答时优先依据这些信息；如果页面没有提供答案，就明确指出缺失处。",
@@ -482,11 +485,11 @@ function buildGroundedSystemPrompt(
           pageContext.description ? `页面描述：${pageContext.description}` : "",
           pageContext.byline ? `作者信息：${pageContext.byline}` : "",
           pageContext.lang ? `页面语言：${pageContext.lang}` : "",
-          pageContext.headings.length
-            ? `主要标题：${pageContext.headings.join(" / ")}`
+          headings.length
+            ? `主要标题：${headings.join(" / ")}`
             : "",
-          pageContext.mathExpressions.length
-            ? `页面公式：${pageContext.mathExpressions.join(" / ")}`
+          mathExpressions.length
+            ? `页面公式：${mathExpressions.join(" / ")}`
             : "",
         ]
           .filter(Boolean)
