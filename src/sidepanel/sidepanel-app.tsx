@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import {
   Globe2,
   RefreshCw,
+  Square,
   SendHorizontal,
   Settings,
   Sparkles,
@@ -20,6 +21,7 @@ import type {
   PageContext,
   StreamResponseMessage,
 } from "@/lib/types"
+import { toDisplayMath } from "@/lib/math"
 import { ChatMessageMarkdown } from "@/components/chat-message-markdown"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -55,6 +57,7 @@ export function SidePanelApp() {
   const [isSending, setIsSending] = useState(false)
   const activeProvider = settings?.selectedProvider ?? "openai"
   const streamPortRef = useRef<chrome.runtime.Port | null>(null)
+  const activeAssistantMessageIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     let isActive = true
@@ -174,6 +177,7 @@ export function SidePanelApp() {
     const nextMessages = [...messages, userMessage]
 
     streamPortRef.current?.disconnect()
+    activeAssistantMessageIdRef.current = assistantMessageId
     setMessages([...nextMessages, assistantPlaceholder])
     setPrompt("")
     setIsSending(true)
@@ -196,6 +200,31 @@ export function SidePanelApp() {
         setIsSending(false)
       },
     })
+  }
+
+  function stopStreaming() {
+    const assistantMessageId = activeAssistantMessageIdRef.current
+
+    streamPortRef.current?.disconnect()
+    streamPortRef.current = null
+    activeAssistantMessageIdRef.current = null
+    setIsSending(false)
+
+    if (!assistantMessageId) {
+      return
+    }
+
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === assistantMessageId
+          ? {
+              ...item,
+              isStreaming: false,
+              content: item.content || "_生成已停止_",
+            }
+          : item
+      )
+    )
   }
 
   function handleStreamMessage(
@@ -237,6 +266,7 @@ export function SidePanelApp() {
             : item
         )
       )
+      activeAssistantMessageIdRef.current = null
       streamPortRef.current?.disconnect()
       setIsSending(false)
       return
@@ -248,6 +278,7 @@ export function SidePanelApp() {
         (item) => !(item.id === assistantMessageId && item.content.length === 0)
       )
     )
+    activeAssistantMessageIdRef.current = null
     streamPortRef.current?.disconnect()
     setIsSending(false)
   }
@@ -457,14 +488,26 @@ export function SidePanelApp() {
                     <span className="text-xs text-muted-foreground">
                       {isSending ? "模型正在分析网页..." : "Cmd/Ctrl + Enter 发送"}
                     </span>
-                    <InputGroupButton
-                      size="sm"
-                      onClick={() => void handleSendPrompt()}
-                      disabled={isSending || !prompt.trim()}
-                    >
-                      <SendHorizontal data-icon="inline-start" />
-                      发送
-                    </InputGroupButton>
+                    <div className="flex items-center gap-2">
+                      {isSending ? (
+                        <InputGroupButton
+                          size="sm"
+                          variant="outline"
+                          onClick={stopStreaming}
+                        >
+                          <Square data-icon="inline-start" />
+                          停止生成
+                        </InputGroupButton>
+                      ) : null}
+                      <InputGroupButton
+                        size="sm"
+                        onClick={() => void handleSendPrompt()}
+                        disabled={isSending || !prompt.trim()}
+                      >
+                        <SendHorizontal data-icon="inline-start" />
+                        发送
+                      </InputGroupButton>
+                    </div>
                   </InputGroupAddon>
                 </InputGroup>
               </CardContent>
@@ -491,11 +534,22 @@ export function SidePanelApp() {
                   <>
                     <div className="flex flex-col gap-2">
                       <h2 className="text-sm font-medium">提取到的公式</h2>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="grid gap-3">
                         {pageContext.mathExpressions.slice(0, 8).map((expression) => (
-                          <Badge key={expression} variant="secondary">
-                            {expression}
-                          </Badge>
+                          <article
+                            key={expression}
+                            className="rounded-2xl border border-border bg-card px-4 py-4"
+                          >
+                            <ChatMessageMarkdown content={toDisplayMath(expression)} />
+                            <div className="mt-3 rounded-xl border border-border bg-secondary px-3 py-2">
+                              <p className="mb-1 text-[0.7rem] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                TeX
+                              </p>
+                              <code className="block break-all whitespace-pre-wrap text-xs leading-6 text-foreground">
+                                {expression}
+                              </code>
+                            </div>
+                          </article>
                         ))}
                       </div>
                     </div>

@@ -139,3 +139,35 @@ body {
     @apply font-sans;
   }
 }
+
+@layer components {
+  .chat-markdown .katex {
+    color: inherit;
+    font-size: 1em;
+  }
+
+  .chat-markdown .katex-display {
+    margin: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) * 1.6);
+    background: color-mix(in oklab, var(--secondary) 88%, white 12%);
+    padding: 0.9rem 1rem;
+  }
+
+  .chat-markdown .katex-display > .katex {
+    display: inline-block;
+    min-width: 100%;
+    text-align: center;
+  }
+
+  .chat-markdown p + .katex-display,
+  .chat-markdown .katex-display + p {
+    margin-top: 0.25rem;
+  }
+
+  .chat-markdown p code {
+    word-break: break-word;
+  }
+}

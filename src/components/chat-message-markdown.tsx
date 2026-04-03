@@ -126,7 +126,7 @@ export function ChatMessageMarkdown({
   ...props
 }: ChatMessageMarkdownProps) {
   return (
-    <div className={cn("flex flex-col gap-3", className)} {...props}>
+    <div className={cn("chat-markdown flex flex-col gap-3", className)} {...props}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
