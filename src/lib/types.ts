@@ -11,6 +11,7 @@ export interface ChatMessage extends ChatTurn {
   id: string
   createdAt: string
   provider?: ProviderId
+  isStreaming?: boolean
 }
 
 export interface ProviderSettings {
@@ -39,6 +40,7 @@ export interface PageContext {
   lang: string
   selection: string
   headings: string[]
+  mathExpressions: string[]
   content: string
   capturedAt: string
 }
@@ -47,6 +49,12 @@ export interface AnalyzePageResult {
   provider: ProviderId
   text: string
   pageContext: PageContext
+}
+
+export interface AnalyzePageStreamMessage {
+  type: "analyze-page-stream"
+  provider?: ProviderId
+  messages: ChatTurn[]
 }
 
 export interface GetActivePageContextMessage {
@@ -60,6 +68,25 @@ export interface AnalyzePageMessage {
 }
 
 export type RuntimeMessage = GetActivePageContextMessage | AnalyzePageMessage
+
+export type StreamResponseMessage =
+  | {
+      type: "start"
+      provider: ProviderId
+      pageContext: PageContext
+    }
+  | {
+      type: "chunk"
+      chunk: string
+    }
+  | {
+      type: "done"
+      result: AnalyzePageResult
+    }
+  | {
+      type: "error"
+      error: string
+    }
 
 export interface RuntimeSuccess<T> {
   ok: true

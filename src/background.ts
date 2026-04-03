@@ -1,11 +1,13 @@
 import { ensureSettings, getSettings } from "@/lib/storage"
-import { analyzeWithProvider } from "@/lib/providers"
+import { analyzeWithProvider, analyzeWithProviderStream } from "@/lib/providers"
 import type {
   AnalyzePageMessage,
+  AnalyzePageStreamMessage,
   PageContext,
   RuntimeFailure,
   RuntimeMessage,
   RuntimeSuccess,
+  StreamResponseMessage,
 } from "@/lib/types"
 
 void bootstrapExtension()
@@ -30,6 +32,22 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _, sendResponse) => {
   void handleRuntimeMessage(message, sendResponse)
   return true
+})
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "analyze-page-stream") {
+    return
+  }
+
+  const abortController = new AbortController()
+
+  port.onDisconnect.addListener(() => {
+    abortController.abort()
+  })
+
+  port.onMessage.addListener((message: AnalyzePageStreamMessage) => {
+    void handleStreamRequest(port, message, abortController.signal)
+  })
 })
 
 async function bootstrapExtension() {
@@ -122,6 +140,56 @@ async function handleRuntimeMessage(
   }
 }
 
+async function handleStreamRequest(
+  port: chrome.runtime.Port,
+  message: AnalyzePageStreamMessage,
+  signal: AbortSignal
+) {
+  if (message.type !== "analyze-page-stream") {
+    return
+  }
+
+  try {
+    const settings = await getSettings()
+    const pageContext = await getActivePageContext(settings.pageTextLimit)
+    const provider = message.provider ?? settings.selectedProvider
+
+    postStreamMessage(port, {
+      type: "start",
+      provider,
+      pageContext,
+    })
+
+    const result = await analyzeWithProviderStream({
+      providerId: provider,
+      settings,
+      pageContext,
+      messages: sanitizeStreamMessages(message),
+      signal,
+      onDelta: (chunk) => {
+        postStreamMessage(port, {
+          type: "chunk",
+          chunk,
+        })
+      },
+    })
+
+    postStreamMessage(port, {
+      type: "done",
+      result,
+    })
+  } catch (error) {
+    if (signal.aborted) {
+      return
+    }
+
+    postStreamMessage(port, {
+      type: "error",
+      error: error instanceof Error ? error.message : "后台流式处理失败。",
+    })
+  }
+}
+
 function sanitizeMessages(message: AnalyzePageMessage) {
   return message.messages
     .map((item) => ({
@@ -129,6 +197,23 @@ function sanitizeMessages(message: AnalyzePageMessage) {
       content: item.content.trim(),
     }))
     .filter((item) => item.content)
+}
+
+function sanitizeStreamMessages(message: AnalyzePageStreamMessage) {
+  return message.messages
+    .map((item) => ({
+      role: item.role,
+      content: item.content.trim(),
+    }))
+    .filter((item) => item.content)
+}
+
+function postStreamMessage(port: chrome.runtime.Port, message: StreamResponseMessage) {
+  try {
+    port.postMessage(message)
+  } catch {
+    // Ignore port errors after disconnect.
+  }
 }
 
 async function getActivePageContext(maxChars: number): Promise<PageContext> {
@@ -183,6 +268,7 @@ function extractPageSnapshot(maxChars: number) {
     .filter(Boolean)
     .slice(0, 8)
   const selection = window.getSelection?.()?.toString().trim() || ""
+  const mathExpressions = collectMathExpressions()
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const chunks: string[] = []
   let length = 0
@@ -237,9 +323,45 @@ function extractPageSnapshot(maxChars: number) {
     lang: document.documentElement.lang || "",
     selection,
     headings,
+    mathExpressions,
     content: content || document.body.innerText.replace(/\s+/g, " ").slice(0, maxChars),
     capturedAt: new Date().toISOString(),
   }
+}
+
+function collectMathExpressions() {
+  const seen = new Set<string>()
+  const expressions: string[] = []
+  const selectors = [
+    "annotation[encoding='application/x-tex']",
+    "annotation[encoding='application/x-tex; mode=display']",
+    "annotation[encoding='application/x-tex; mode=inline']",
+    "script[type^='math/tex']",
+    "[data-tex]",
+    "[data-latex]",
+  ]
+
+  for (const element of document.querySelectorAll(selectors.join(", "))) {
+    const text =
+      element.getAttribute("data-tex") ||
+      element.getAttribute("data-latex") ||
+      element.textContent ||
+      ""
+    const normalized = text.replace(/\s+/g, " ").trim()
+
+    if (!normalized || seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    expressions.push(normalized)
+
+    if (expressions.length >= 20) {
+      break
+    }
+  }
+
+  return expressions
 }
 
 function toggleFloatingPanelInjected(iframeUrl: string) {

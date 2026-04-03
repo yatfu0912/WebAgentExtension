@@ -15,6 +15,11 @@ interface AnalyzeWithProviderArgs {
   messages: ChatTurn[]
 }
 
+interface AnalyzeWithProviderStreamArgs extends AnalyzeWithProviderArgs {
+  onDelta: (chunk: string) => void
+  signal?: AbortSignal
+}
+
 interface ParsedResponseBody {
   contentType: string
   json: unknown | null
@@ -38,6 +43,44 @@ export async function analyzeWithProvider({
     providerId === "openai"
       ? await analyzeWithOpenAi(providerSettings, settings, pageContext, messages)
       : await analyzeWithClaude(providerSettings, settings, pageContext, messages)
+
+  return {
+    provider: providerId,
+    text,
+    pageContext,
+  }
+}
+
+export async function analyzeWithProviderStream({
+  providerId,
+  settings,
+  pageContext,
+  messages,
+  onDelta,
+  signal,
+}: AnalyzeWithProviderStreamArgs): Promise<AnalyzePageResult> {
+  const providerSettings = settings[providerId]
+
+  validateProviderConfiguration(providerId, providerSettings)
+
+  const text =
+    providerId === "openai"
+      ? await streamWithOpenAi(
+          providerSettings,
+          settings,
+          pageContext,
+          messages,
+          onDelta,
+          signal
+        )
+      : await streamWithClaude(
+          providerSettings,
+          settings,
+          pageContext,
+          messages,
+          onDelta,
+          signal
+        )
 
   return {
     provider: providerId,
@@ -160,6 +203,136 @@ async function analyzeWithOpenAi(
   throw lastError || new Error("OpenAI 请求失败。")
 }
 
+async function streamWithOpenAi(
+  provider: ProviderSettings,
+  settings: ExtensionSettings,
+  pageContext: PageContext,
+  messages: ChatTurn[],
+  onDelta: (chunk: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const endpoints = resolveOpenAiEndpoints(provider.baseUrl)
+  let lastError: Error | null = null
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(
+        endpoint,
+        buildFetchInit(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${provider.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            temperature: 0.2,
+            max_tokens: 1200,
+            stream: true,
+            messages: [
+              {
+                role: "system",
+                content: buildGroundedSystemPrompt(settings, pageContext),
+              },
+              ...messages,
+            ],
+          }),
+          signal,
+        })
+      )
+
+      if (!response.ok) {
+        const data = await readResponseBody(response)
+        const error = new Error(
+          extractApiError({
+            providerLabel: "OpenAI",
+            endpoint,
+            response,
+            data,
+          })
+        )
+
+        if (shouldRetryOpenAiEndpoint(response.status, endpoint, endpoints)) {
+          lastError = error
+          continue
+        }
+
+        throw error
+      }
+
+      const contentType = response.headers.get("content-type") || ""
+
+      if (!contentType.includes("text/event-stream")) {
+        const data = await readResponseBody(response)
+        const payload = data.json as
+          | {
+              choices?: Array<{
+                message?: {
+                  content?: unknown
+                }
+              }>
+            }
+          | null
+        const messageContent = payload?.choices?.[0]?.message?.content
+        const text = normalizeOpenAiContent(messageContent)
+
+        if (!text) {
+          throw new Error("OpenAI 没有返回可解析的文本内容。")
+        }
+
+        onDelta(text)
+        return text
+      }
+
+      let text = ""
+
+      await readSseStream(response, ({ data }) => {
+        if (data === "[DONE]") {
+          return
+        }
+
+        const payload = safeParseJson(data)
+        const chunk = extractOpenAiStreamText(payload)
+
+        if (!chunk) {
+          return
+        }
+
+        text += chunk
+        onDelta(chunk)
+      })
+
+      if (!text) {
+        throw new Error("OpenAI 没有返回可解析的流式内容。")
+      }
+
+      return text
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new Error("请求已取消。")
+      }
+
+      const normalizedError =
+        error instanceof Error
+          ? error
+          : new Error(
+              isLoopbackUrl(endpoint)
+                ? "无法连接本机 Codex 代理。请先在设置页点击“测试连接”，并允许 Chrome 的本地网络访问权限。"
+                : "OpenAI 请求失败。"
+            )
+
+      if (shouldRetryOpenAiError(endpoint, endpoints)) {
+        lastError = normalizedError
+        continue
+      }
+
+      throw normalizedError
+    }
+  }
+
+  throw lastError || new Error("OpenAI 请求失败。")
+}
+
 async function analyzeWithClaude(
   provider: ProviderSettings,
   settings: ExtensionSettings,
@@ -213,6 +386,88 @@ async function analyzeWithClaude(
   return text
 }
 
+async function streamWithClaude(
+  provider: ProviderSettings,
+  settings: ExtensionSettings,
+  pageContext: PageContext,
+  messages: ChatTurn[],
+  onDelta: (chunk: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const endpoint = resolveClaudeEndpoint(provider.baseUrl)
+  const response = await fetch(
+    endpoint,
+    buildFetchInit(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": provider.apiKey,
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        system: buildGroundedSystemPrompt(settings, pageContext),
+        temperature: 0.2,
+        max_tokens: 1200,
+        stream: true,
+        messages,
+      }),
+      signal,
+    })
+  )
+
+  if (!response.ok) {
+    const data = await readResponseBody(response)
+    throw new Error(
+      extractApiError({
+        providerLabel: "Claude",
+        endpoint,
+        response,
+        data,
+      })
+    )
+  }
+
+  const contentType = response.headers.get("content-type") || ""
+
+  if (!contentType.includes("text/event-stream")) {
+    const data = await readResponseBody(response)
+    const payload = data.json as
+      | {
+          content?: unknown
+        }
+      | null
+    const text = normalizeClaudeContent(payload?.content)
+
+    if (!text) {
+      throw new Error("Claude 没有返回可解析的文本内容。")
+    }
+
+    onDelta(text)
+    return text
+  }
+
+  let text = ""
+
+  await readSseStream(response, ({ data }) => {
+    const payload = safeParseJson(data)
+    const chunk = extractClaudeStreamText(payload)
+
+    if (!chunk) {
+      return
+    }
+
+    text += chunk
+    onDelta(chunk)
+  })
+
+  if (!text) {
+    throw new Error("Claude 没有返回可解析的流式内容。")
+  }
+
+  return text
+}
+
 function buildGroundedSystemPrompt(
   settings: ExtensionSettings,
   pageContext: PageContext
@@ -229,6 +484,9 @@ function buildGroundedSystemPrompt(
           pageContext.lang ? `页面语言：${pageContext.lang}` : "",
           pageContext.headings.length
             ? `主要标题：${pageContext.headings.join(" / ")}`
+            : "",
+          pageContext.mathExpressions.length
+            ? `页面公式：${pageContext.mathExpressions.join(" / ")}`
             : "",
         ]
           .filter(Boolean)
@@ -280,6 +538,78 @@ function resolveClaudeEndpoint(baseUrl: string) {
   }
 
   return `${normalized}/v1/messages`
+}
+
+async function readSseStream(
+  response: Response,
+  onMessage: (message: { event: string; data: string }) => void
+) {
+  if (!response.body) {
+    throw new Error("流式响应不可用。")
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  while (true) {
+    const { done, value } = await reader.read()
+
+    if (done) {
+      buffer += decoder.decode()
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split(/\r?\n\r?\n/)
+    buffer = parts.pop() || ""
+
+    for (const part of parts) {
+      const message = parseSseMessage(part)
+
+      if (message) {
+        onMessage(message)
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const message = parseSseMessage(buffer)
+
+    if (message) {
+      onMessage(message)
+    }
+  }
+}
+
+function parseSseMessage(raw: string) {
+  const lines = raw.split(/\r?\n/)
+  let event = "message"
+  const dataLines: string[] = []
+
+  for (const line of lines) {
+    if (!line || line.startsWith(":")) {
+      continue
+    }
+
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim()
+      continue
+    }
+
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim())
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null
+  }
+
+  return {
+    event,
+    data: dataLines.join("\n"),
+  }
 }
 
 async function readResponseBody(response: Response) {
@@ -396,6 +726,58 @@ function safePathname(url: string) {
   } catch {
     return url
   }
+}
+
+function safeParseJson(raw: string) {
+  try {
+    return JSON.parse(raw) as unknown
+  } catch {
+    return null
+  }
+}
+
+function extractOpenAiStreamText(payload: unknown) {
+  if (
+    typeof payload === "object" &&
+    payload &&
+    "choices" in payload &&
+    Array.isArray(payload.choices)
+  ) {
+    const firstChoice = payload.choices[0]
+
+    if (
+      typeof firstChoice === "object" &&
+      firstChoice &&
+      "delta" in firstChoice &&
+      typeof firstChoice.delta === "object" &&
+      firstChoice.delta &&
+      "content" in firstChoice.delta
+    ) {
+      return normalizeOpenAiContent(firstChoice.delta.content)
+    }
+  }
+
+  return ""
+}
+
+function extractClaudeStreamText(payload: unknown) {
+  if (
+    typeof payload === "object" &&
+    payload &&
+    "type" in payload &&
+    payload.type === "content_block_delta" &&
+    "delta" in payload &&
+    typeof payload.delta === "object" &&
+    payload.delta &&
+    "type" in payload.delta &&
+    payload.delta.type === "text_delta" &&
+    "text" in payload.delta &&
+    typeof payload.delta.text === "string"
+  ) {
+    return payload.delta.text
+  }
+
+  return ""
 }
 
 function shouldRetryOpenAiEndpoint(

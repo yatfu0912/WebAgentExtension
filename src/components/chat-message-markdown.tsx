@@ -1,7 +1,9 @@
 import type { ComponentPropsWithoutRef } from "react"
+import rehypeKatex from "rehype-katex"
 import type { Components } from "react-markdown"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import remarkMath from "remark-math"
 
 import { cn } from "@/lib/utils"
 
@@ -125,7 +127,11 @@ export function ChatMessageMarkdown({
 }: ChatMessageMarkdownProps) {
   return (
     <div className={cn("flex flex-col gap-3", className)} {...props}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={markdownComponents}
+      >
         {content}
       </ReactMarkdown>
     </div>

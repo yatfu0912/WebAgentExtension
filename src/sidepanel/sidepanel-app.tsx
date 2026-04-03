@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Globe2,
   RefreshCw,
@@ -11,13 +11,14 @@ import { toast } from "sonner"
 
 import { SETTINGS_STORAGE_KEY } from "@/lib/defaults"
 import { getSettings } from "@/lib/storage"
-import { sendRuntimeMessage } from "@/lib/runtime"
+import { connectAnalyzePageStream, sendRuntimeMessage } from "@/lib/runtime"
 import type {
-  AnalyzePageResult,
+  AnalyzePageStreamMessage,
   ChatMessage,
   ChatTurn,
   ExtensionSettings,
   PageContext,
+  StreamResponseMessage,
 } from "@/lib/types"
 import { ChatMessageMarkdown } from "@/components/chat-message-markdown"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -53,6 +54,7 @@ export function SidePanelApp() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const activeProvider = settings?.selectedProvider ?? "openai"
+  const streamPortRef = useRef<chrome.runtime.Port | null>(null)
 
   useEffect(() => {
     let isActive = true
@@ -119,6 +121,7 @@ export function SidePanelApp() {
 
     return () => {
       isActive = false
+      streamPortRef.current?.disconnect()
       chrome.storage.onChanged.removeListener(listener)
     }
   }, [])
@@ -159,39 +162,94 @@ export function SidePanelApp() {
       content: value,
       createdAt: new Date().toISOString(),
     }
+    const assistantMessageId = crypto.randomUUID()
+    const assistantPlaceholder: ChatMessage = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      createdAt: new Date().toISOString(),
+      provider: activeProvider,
+      isStreaming: true,
+    }
     const nextMessages = [...messages, userMessage]
 
-    setMessages(nextMessages)
+    streamPortRef.current?.disconnect()
+    setMessages([...nextMessages, assistantPlaceholder])
     setPrompt("")
     setIsSending(true)
 
-    try {
-      const result = await sendRuntimeMessage<AnalyzePageResult>({
-        type: "analyze-page",
-        provider: activeProvider,
-        messages: nextMessages.map<ChatTurn>(({ role, content }) => ({
-          role,
-          content,
-        })),
-      })
-
-      setPageContext(result.pageContext)
-      setPageError("")
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: result.text,
-          createdAt: new Date().toISOString(),
-          provider: result.provider,
-        },
-      ])
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "分析失败。")
-    } finally {
-      setIsSending(false)
+    const request: AnalyzePageStreamMessage = {
+      type: "analyze-page-stream",
+      provider: activeProvider,
+      messages: nextMessages.map<ChatTurn>(({ role, content }) => ({
+        role,
+        content,
+      })),
     }
+
+    streamPortRef.current = connectAnalyzePageStream(request, {
+      onMessage: (message) => {
+        handleStreamMessage(message, assistantMessageId)
+      },
+      onDisconnect: () => {
+        streamPortRef.current = null
+        setIsSending(false)
+      },
+    })
+  }
+
+  function handleStreamMessage(
+    message: StreamResponseMessage,
+    assistantMessageId: string
+  ) {
+    if (message.type === "start") {
+      setPageContext(message.pageContext)
+      setPageError("")
+      return
+    }
+
+    if (message.type === "chunk") {
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: item.content + message.chunk,
+              }
+            : item
+        )
+      )
+      return
+    }
+
+    if (message.type === "done") {
+      setPageContext(message.result.pageContext)
+      setPageError("")
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: item.content || message.result.text,
+                provider: message.result.provider,
+                isStreaming: false,
+              }
+            : item
+        )
+      )
+      streamPortRef.current?.disconnect()
+      setIsSending(false)
+      return
+    }
+
+    toast.error(message.error)
+    setMessages((current) =>
+      current.filter(
+        (item) => !(item.id === assistantMessageId && item.content.length === 0)
+      )
+    )
+    streamPortRef.current?.disconnect()
+    setIsSending(false)
   }
 
   return (
@@ -351,7 +409,18 @@ export function SidePanelApp() {
                           </time>
                         </div>
                         {message.role === "assistant" ? (
-                          <ChatMessageMarkdown content={message.content} />
+                          <div className="flex flex-col gap-3">
+                            {message.content ? (
+                              <ChatMessageMarkdown content={message.content} />
+                            ) : (
+                              <p className="text-sm leading-6 text-muted-foreground">
+                                正在生成...
+                              </p>
+                            )}
+                            {message.isStreaming ? (
+                              <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                            ) : null}
+                          </div>
                         ) : (
                           <p className="whitespace-pre-wrap text-sm leading-6">
                             {message.content}
@@ -418,6 +487,21 @@ export function SidePanelApp() {
                     </Badge>
                   ))}
                 </div>
+                {pageContext?.mathExpressions.length ? (
+                  <>
+                    <div className="flex flex-col gap-2">
+                      <h2 className="text-sm font-medium">提取到的公式</h2>
+                      <div className="flex flex-wrap gap-2">
+                        {pageContext.mathExpressions.slice(0, 8).map((expression) => (
+                          <Badge key={expression} variant="secondary">
+                            {expression}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                    <Separator />
+                  </>
+                ) : null}
                 {pageContext?.selection ? (
                   <>
                     <div className="flex flex-col gap-2">
